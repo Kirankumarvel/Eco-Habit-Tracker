@@ -49,4 +49,4 @@ except Exception as e:
 def close_db_connection():
     conn.close()
 
-st.on_event("shutdown", close_db_connection)
+#st.on_event("shutdown", close_db_connection)
