@@ -1,62 +1,152 @@
 import streamlit as st
 import sqlite3
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
+import plotly.express as px
+import os
 
-# --- Database Setup ---
-def create_connection():
-    conn = sqlite3.connect('eco_habits.db', check_same_thread=False)
-    return conn
-
-def create_table(conn):
-    with conn:
-        conn.execute('''CREATE TABLE IF NOT EXISTS habits (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            habit TEXT,
-            date TEXT
-        )''')
-
-conn = create_connection()
-create_table(conn)
+# --- DB Setup ---
+conn = sqlite3.connect('eco_habits.db', check_same_thread=False)
 c = conn.cursor()
+c.execute('''CREATE TABLE IF NOT EXISTS habits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    habit TEXT,
+    date TEXT
+)''')
+c.execute('''CREATE TABLE IF NOT EXISTS custom_habits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    habit TEXT
+)''')
+conn.commit()
 
-# --- UI Setup ---
+# --- Page Config ---
+st.set_page_config(page_title="Eco-Habit Tracker", page_icon="🌱", layout="wide")
+
 st.title("🌱 Eco-Habit Tracker")
-st.write("Track your daily green habits to build a better planet! 🌍")
+st.caption("Track your daily green habits to build a better planet.")
 
-# --- Habit Input Section ---
-st.header("Log Your Habit")
-habit_options = ["Watered Plants", "Reduced Plastic Use", "Recycled", "Used Public Transport", "Saved Electricity"]
+# --- Habit Options ---
+default_habit_options = [
+    "Watered Plants 🪴", "Reduced Plastic Use ♻️", "Recycled 📦",
+    "Used Public Transport 🚌", "Saved Electricity 💡",
+    "Composted Food Waste 🍂", "Used a Reusable Water Bottle 🚰",
+    "Planted a Tree 🌳", "Picked Up Litter 🚮", "Used Renewable Energy Sources 🌞",
+    "Donated to Environmental Causes 🌍", "Participated in a Cleanup Drive 🧹",
+    "Educated Others About Sustainability 📚", "Used Eco-Friendly Products 🌿",
+    "Avoided Single-Use Plastics 🚯"
+]
+custom_habits = [row[0] for row in c.execute("SELECT habit FROM custom_habits").fetchall()]
+habit_options = default_habit_options + custom_habits
+
+# --- Log a Habit ---
+st.subheader("✅ Log an Eco-Habit")
 habit = st.selectbox("What eco-habit did you complete today?", habit_options)
+confirm = st.checkbox(f"I confirm I completed: {habit}")
+if st.button("Add to Log"):
+    if confirm:
+        try:
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            c.execute("INSERT INTO habits (habit, date) VALUES (?, ?)", (habit, date_str))
+            conn.commit()
+            st.success(f"🎉 Logged: '{habit}' on {date_str}")
+        except Exception as e:
+            st.error(f"❌ Error logging habit: {e}")
+    else:
+        st.warning("☝️ Please confirm before logging.")
 
-if st.button("✅ Add to Log"):
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    try:
-        c.execute("INSERT INTO habits (habit, date) VALUES (?, ?)", (habit, date_str))
-        conn.commit()
-        st.success(f"Habit '{habit}' logged for today!")
-    except Exception as e:
-        st.error(f"Error logging habit: {e}")
+# --- Add Custom Habit ---
+st.subheader("➕ Add Custom Habit")
+new_habit = st.text_input("Enter your custom habit:")
+if st.button("Add Custom Habit"):
+    if new_habit.strip():
+        try:
+            c.execute("INSERT INTO custom_habits (habit) VALUES (?)", (new_habit.strip(),))
+            conn.commit()
+            st.success(f"✅ Added new habit: '{new_habit.strip()}'")
+        except Exception as e:
+            st.error(f"❌ Error adding custom habit: {e}")
+    else:
+        st.warning("☝️ Please enter a valid habit.")
 
-# --- Show Habit History ---
-st.header("📅 Your Habit History")
+# --- Habit History ---
+st.subheader("📅 Habit Log History")
 try:
     data = pd.read_sql("SELECT habit, date FROM habits ORDER BY date DESC", conn)
-    st.dataframe(data)
+    st.dataframe(data, use_container_width=True)
 except Exception as e:
-    st.error(f"Error fetching habit history: {e}")
+    st.error(f"❌ Error fetching history: {e}")
 
-# --- Habit Frequency Chart ---
-st.header("📊 Habit Frequency")
+# --- Streak Tracker ---
+st.subheader("🔥 Streak Tracker")
 try:
-    chart_data = data.groupby("habit").count().rename(columns={"date": "Count"})
-    st.bar_chart(chart_data)
+    streaks = {}
+    data['date'] = pd.to_datetime(data['date'])
+    for habit in habit_options:
+        habit_data = data[data['habit'] == habit].copy()
+        habit_data = habit_data.sort_values('date')
+        streak = max_streak = 0
+        prev_date = None
+        for d in habit_data['date']:
+            if prev_date is not None and (d - prev_date).days == 1:
+                streak += 1
+            else:
+                streak = 1
+            max_streak = max(max_streak, streak)
+            prev_date = d
+        if max_streak > 0:
+            streaks[habit] = max_streak
+    if streaks:
+        st.json(streaks)
+    else:
+        st.info("No streak data yet. Start logging habits!")
 except Exception as e:
-    st.error(f"Error generating chart: {e}")
+    st.error(f"❌ Error calculating streaks: {e}")
 
-# --- Close DB Connection on Streamlit Stop ---
-def close_db_connection():
-    conn.close()
+# --- Leaderboard ---
+st.subheader("🏆 Eco-Score Leaderboard")
+try:
+    data['points'] = 10  # 10 points per entry
+    leaderboard = data.groupby('habit')['points'].sum().sort_values(ascending=False)
+    st.bar_chart(leaderboard)
+except Exception as e:
+    st.error(f"❌ Error generating leaderboard: {e}")
 
-# Uncomment the following line if you want to close the DB connection on Streamlit app shutdown
-# st.on_event("shutdown", close_db_connection)
+# --- Line Chart: Progress Over Time ---
+st.subheader("📈 Habits Over Time")
+try:
+    time_chart = data.groupby('date').size().reset_index(name='Count')
+    fig = px.line(time_chart, x='date', y='Count', title='Habits Logged Over Time')
+    st.plotly_chart(fig)
+except Exception as e:
+    st.error(f"❌ Error plotting chart: {e}")
+
+# --- Download CSV ---
+st.subheader("📥 Export Habit Log")
+if not data.empty:
+    csv = data.to_csv(index=False).encode('utf-8')
+    st.download_button("Download CSV", csv, "eco_habit_logs.csv", "text/csv")
+else:
+    st.info("No data available to export.")
+
+# --- Reminder System (Simulated for Web) ---
+st.subheader("⏰ Daily Habit Reminder")
+st.info("⚠️ Real desktop notifications require local execution. Here, we simulate reminders.")
+if st.button("Simulate Reminder"):
+    st.success("🔔 Reminder: Don't forget to log your eco-habit today!")
+
+# --- Admin Tools (optional) ---
+with st.expander("🛠 Admin Tools (Danger Zone)"):
+    if st.button("Clear All Logs"):
+        c.execute("DELETE FROM habits")
+        conn.commit()
+        st.warning("🚨 All habit logs cleared!")
+
+    if st.button("Clear Custom Habits"):
+        c.execute("DELETE FROM custom_habits")
+        conn.commit()
+        st.warning("🚨 All custom habits removed!")
+
+# --- DB Cleanup on Exit ---
+@st.cache_resource
+def get_connection():
+    return conn
